@@ -53,6 +53,18 @@
   #msg{font-size:14px; color:var(--han-deep); font-weight:600; min-height:20px; text-align:right; flex:1;}
 
   #boardwrap{position:relative; width:100%; max-width:520px; padding:0 10px 4px; touch-action:none;}
+  #checkBadge{position:absolute; top:10px; left:50%; transform:translateX(-50%);
+    display:none; align-items:center; gap:9px; z-index:10; pointer-events:none;
+    background:linear-gradient(180deg,#d51f2b,#a50f1a); color:#fff5f0;
+    padding:9px 22px; border-radius:15px; font-size:22px; font-weight:800; letter-spacing:5px;
+    box-shadow:0 5px 18px rgba(120,10,20,.55), inset 0 1px 0 rgba(255,255,255,.35);
+    text-shadow:0 1px 2px rgba(80,0,5,.6);
+    animation:checkPulse .8s ease-in-out infinite;}
+  #checkBadge span{font-size:14px; letter-spacing:2px; font-weight:700;}
+  @keyframes checkPulse{
+    0%,100%{transform:translateX(-50%) scale(1); box-shadow:0 5px 18px rgba(120,10,20,.5), inset 0 1px 0 rgba(255,255,255,.35);}
+    50%{transform:translateX(-50%) scale(1.09); box-shadow:0 7px 24px rgba(200,20,30,.75), inset 0 1px 0 rgba(255,255,255,.35);}
+  }
   canvas{width:100%; height:auto; display:block; border-radius:8px;
     box-shadow:0 10px 28px var(--shadow), 0 2px 0 #c3aa78; background:var(--board);}
 
@@ -115,7 +127,7 @@
   <div id="msg"></div>
 </div>
 
-<div id="boardwrap"><canvas id="board"></canvas></div>
+<div id="boardwrap"><canvas id="board"></canvas><div id="checkBadge">將軍<span>장군!</span></div></div>
 
 <div id="controls">
   <button class="btn" id="btnUndo"><span class="ic">↩</span>무르기</button>
@@ -477,6 +489,20 @@ function draw(){
     ctx.beginPath(); ctx.arc(x,y,CELL*0.46,0,7); ctx.stroke(); ctx.setLineDash([]); }
   // 말 (아래→위 순서로 그려 겹침 자연스럽게)
   for(let r=9;r>=0;r--)for(let c=0;c<9;c++){ const p=board[r][c]; if(p) drawPiece(r,c,p); }
+  // 장군 표시: 둘 차례인 편이 장군당한 상태면 그 궁을 붉게 강조하고 배지 표시
+  const badge=document.getElementById('checkBadge');
+  if(!gameOver && board && inCheck(board,turn)){
+    const k=findK(board,turn);
+    if(k){ const[x,y]=scr(k[0],k[1]), R=CELL*SIZE.K;
+      ctx.save();
+      ctx.strokeStyle='rgba(224,26,38,.95)'; ctx.lineWidth=4;
+      ctx.shadowColor='rgba(224,26,38,.85)'; ctx.shadowBlur=16;
+      octPath(x,y,R+4.5); ctx.stroke();
+      ctx.lineWidth=2; ctx.shadowBlur=6; octPath(x,y,R+9); ctx.stroke();
+      ctx.restore();
+    }
+    if(badge) badge.style.display='flex';
+  } else if(badge){ badge.style.display='none'; }
 }
 function drawPalaceX(r0,r1){
   ctx.strokeStyle='#5a3d1c'; ctx.lineWidth=1.2;
@@ -576,8 +602,7 @@ function doMove(fr,fc,tr,tc){
   const enemyMoves=allMoves(board,turn);
   if(enemyMoves.length===0){ endGame(mover, checking?'checkmate':'stalemate'); return; }
   if(checking){ setTimeout(sfx.check,120);
-    if(ordinal>=2) flash('','⚠ 반복 장군 주의 — 한 번 더 같은 장군이면 반칙패');
-    else flash('','장군!'); }
+    if(ordinal>=2) flash('','⚠ 반복 장군 주의 — 한 번 더 같은 장군이면 반칙패'); }
   updateStatus();
   if(mode==='ai'&&turn!==humanColor&&!gameOver){ thinking=true; updateStatus(); setTimeout(aiTurn,260); }
 }
@@ -620,6 +645,7 @@ function flash(who,text){ const m=document.getElementById('msg'); m.textContent=
   clearTimeout(flashTimer); flashTimer=setTimeout(()=>m.textContent='',1600); }
 function endGame(winner,reason){
   gameOver=true; updateStatus();
+  const cb=document.getElementById('checkBadge'); if(cb) cb.style.display='none';
   const rico=document.getElementById('rico'), rt=document.getElementById('rtitle'), rx=document.getElementById('rtext');
   const winName = winner===HAN?'한(漢)':'초(楚)';
   const loseName = winner===HAN?'초(楚)':'한(漢)';
