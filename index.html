@@ -214,6 +214,8 @@ function palaceDiagNeighbors(r,c){
 let board, turn, mode, aiDepth, humanColor, setupType='HE';
 let selected=null, legalForSel=[], history=[], gameOver=false;
 let soundOn=true, lastMove=null, hintTarget=null, thinking=false, flip=false;
+let posLog=[];              // 각 국면(반상+차례) 서명 기록 — 반복 장군 판정용
+const REP_LIMIT=3;          // 같은 장군 국면 3회째 = 반칙패
 
 /* ---------- 이동 생성 ---------- */
 function pieceMoves(b,r,c){
@@ -282,6 +284,21 @@ function legalMoves(b,r,c){const p=b[r][c]; if(!p)return[]; const res=[];
     if(!inCheck(nb,p.c))res.push([rr,cc]); } return res; }
 function allMoves(b,s){const mv=[]; for(let r=0;r<10;r++)for(let c=0;c<9;c++){const p=b[r][c];
   if(p&&p.c===s)for(const[rr,cc]of legalMoves(b,r,c))mv.push([r,c,rr,cc]);} return mv; }
+
+/* ---------- 반복 장군(빅수) 판정 ----------
+   국면 서명 = 반상 배치 + 다음 둘 차례.
+   장군을 부르는 수가 '같은 장군 국면'을 몇 번째로 만드는지 센다.
+   3회째가 되면 장군을 부른 쪽의 반칙패. */
+function sig(b,t){ let s=t; for(let r=0;r<10;r++)for(let c=0;c<9;c++){ const p=b[r][c]; s += p?(p.c+p.t):'..'; } return s; }
+// 후보 수(mover가 둠)를 실제로 두면 이 장군 국면이 몇 번째로 나타나는가.
+// 장군이 아니면 0 반환(반복 규칙 대상 아님).
+function checkRepetitionOrdinal(fr,fc,tr,tc,mover){
+  const nb=clone(board); nb[tr][tc]=nb[fr][fc]; nb[fr][fc]=null;
+  if(!inCheck(nb,opp(mover))) return 0;           // 장군이 아니면 규칙 무관
+  const s=sig(nb,opp(mover));
+  let prior=0; for(const x of posLog) if(x===s) prior++;
+  return prior+1;                                  // 이 수를 두면 나타나는 회차
+}
 
 /* ---------- 초기 배치 ---------- */
 function makeBoard(){
@@ -416,6 +433,7 @@ const sfx={
   check:()=>gong(.32,.85),
   win:()=>{ gong(.3,1.1); [659,784,988,1319].forEach((f,i)=>setTimeout(()=>tone(f,.24,'triangle',.24),i*140+200)); },
   lose:()=>[392,349,294,220].forEach((f,i)=>setTimeout(()=>tone(f,.32,'sine',.22),i*180)),
+  deny:()=>{ tone(160,.13,'sawtooth',.16); setTimeout(()=>tone(120,.16,'square',.14),70); },
 };
 
 /* ================= 렌더링 ================= */
@@ -525,7 +543,16 @@ canvas.addEventListener('click', e=>{
 function handleTap(r,c){
   hintTarget=null; const p=board[r][c];
   if(selected){
-    if(legalForSel.some(m=>m[0]===r&&m[1]===c)){ doMove(selected.r,selected.c,r,c); return; }
+    if(legalForSel.some(m=>m[0]===r&&m[1]===c)){
+      // 반복 장군 3회째면 반칙 — 두지 못하게 막고 다른 길로 안내
+      if(checkRepetitionOrdinal(selected.r,selected.c,r,c,turn)>=REP_LIMIT){
+        const anySafe=allMoves(board,turn).some(m=>checkRepetitionOrdinal(m[0],m[1],m[2],m[3],turn)<REP_LIMIT);
+        if(anySafe){ sfx.deny(); flash('','🚫 같은 장군 3회는 반칙패! 다른 길을 찾으세요'); return; }
+        // 피할 수 있는 수가 전혀 없으면 규칙상 반칙패
+        endGame(opp(turn),'repetition'); return;
+      }
+      doMove(selected.r,selected.c,r,c); return;
+    }
     if(p&&p.c===turn){ selectPiece(r,c); return; }
     selected=null; legalForSel=[]; draw(); return;
   }
@@ -535,25 +562,44 @@ function selectPiece(r,c){ selected={r,c}; legalForSel=legalMoves(board,r,c); sf
 
 /* ================= 이동 실행 ================= */
 function doMove(fr,fc,tr,tc){
+  const mover=turn;
+  const ordinal=checkRepetitionOrdinal(fr,fc,tr,tc,mover); // 장군 회차 (0=장군 아님)
   const captured=board[tr][tc];
   history.push({board:clone(board),turn,lastMove});
   board[tr][tc]=board[fr][fc]; board[fr][fc]=null;
   lastMove={fr,fc,tr,tc}; selected=null; legalForSel=[]; hintTarget=null;
-  const enemy=opp(turn); const checking=inCheck(board,enemy);
+  const enemy=opp(mover); const checking=inCheck(board,enemy);
   if(captured)sfx.capture(); else sfx.move();
-  turn=enemy; draw();
+  turn=enemy;
+  posLog.push(sig(board,turn));         // 국면 서명 기록
+  draw();
   const enemyMoves=allMoves(board,turn);
-  if(enemyMoves.length===0){ endGame(opp(turn), checking?'checkmate':'stalemate'); return; }
-  if(checking){ setTimeout(sfx.check,120); flash('','장군!'); }
+  if(enemyMoves.length===0){ endGame(mover, checking?'checkmate':'stalemate'); return; }
+  if(checking){ setTimeout(sfx.check,120);
+    if(ordinal>=2) flash('','⚠ 반복 장군 주의 — 한 번 더 같은 장군이면 반칙패');
+    else flash('','장군!'); }
   updateStatus();
   if(mode==='ai'&&turn!==humanColor&&!gameOver){ thinking=true; updateStatus(); setTimeout(aiTurn,260); }
+}
+function pickBestAmong(moves,color){ // 주어진 수들 중 정적 평가로 최선 선택(폴백용)
+  const maxing=color===HAN; let bs=maxing?-1e9:1e9, best=[];
+  for(const mv of moves){ const[r,c,rr,cc]=mv; const nb=clone(board); nb[rr][cc]=nb[r][c]; nb[r][c]=null;
+    const sc=evaluate(nb);
+    if(maxing?sc>bs:sc<bs){bs=sc;best=[mv];} else if(sc===bs)best.push(mv); }
+  return best[Math.floor(Math.random()*best.length)];
 }
 function aiTurn(){
   const moves=allMoves(board,turn);
   if(moves.length===0){ endGame(humanColor,'checkmate'); return; }
+  // 반복 장군 3회째가 되는 반칙수 제외
+  const safe=moves.filter(m=>checkRepetitionOrdinal(m[0],m[1],m[2],m[3],turn)<REP_LIMIT);
+  if(safe.length===0){ thinking=false; endGame(humanColor,'repetition'); return; }
   let mv;
-  if(aiDepth===1 && Math.random()<0.28) mv=moves[Math.floor(Math.random()*moves.length)];
-  else mv=bestMove(board,turn,aiDepth)||moves[0];
+  if(aiDepth===1 && Math.random()<0.28) mv=safe[Math.floor(Math.random()*safe.length)];
+  else {
+    mv=bestMove(board,turn,aiDepth);
+    if(!mv || checkRepetitionOrdinal(mv[0],mv[1],mv[2],mv[3],turn)>=REP_LIMIT) mv=pickBestAmong(safe,turn);
+  }
   thinking=false; doMove(mv[0],mv[1],mv[2],mv[3]);
 }
 
@@ -576,12 +622,17 @@ function endGame(winner,reason){
   gameOver=true; updateStatus();
   const rico=document.getElementById('rico'), rt=document.getElementById('rtitle'), rx=document.getElementById('rtext');
   const winName = winner===HAN?'한(漢)':'초(楚)';
+  const loseName = winner===HAN?'초(楚)':'한(漢)';
+  const reasonText = reason==='checkmate' ? '외통수로 궁을 잡았습니다.'
+    : reason==='repetition' ? (loseName+'이(가) 같은 장군을 3회 반복하여 반칙패했습니다.')
+    : '상대가 둘 수 없어 이겼습니다.';
   if(mode==='ai'){
-    if(winner===humanColor){ rico.textContent='🏆'; rt.textContent='승리!'; rx.textContent='컴퓨터를 이겼습니다. 훌륭합니다!'; sfx.win(); }
-    else{ rico.textContent='🥀'; rt.textContent='패배'; rx.textContent='아쉽네요. 다시 도전해 보세요.'; sfx.lose(); }
+    if(winner===humanColor){ rico.textContent='🏆'; rt.textContent='승리!';
+      rx.textContent = reason==='repetition'?'컴퓨터가 반복 장군으로 반칙패했습니다!':'컴퓨터를 이겼습니다. 훌륭합니다!'; sfx.win(); }
+    else{ rico.textContent='🥀'; rt.textContent='패배';
+      rx.textContent = reason==='repetition'?'같은 장군을 3회 반복하여 반칙패했습니다.':'아쉽네요. 다시 도전해 보세요.'; sfx.lose(); }
   } else {
-    rico.textContent='🏆'; rt.textContent=winName+' 승리!';
-    rx.textContent = reason==='checkmate'?'외통수로 궁을 잡았습니다.':'상대가 둘 수 없어 이겼습니다.'; sfx.win();
+    rico.textContent='🏆'; rt.textContent=winName+' 승리!'; rx.textContent=reasonText; sfx.win();
   }
   document.getElementById('result').classList.remove('hide');
 }
@@ -596,7 +647,8 @@ document.getElementById('btnHint').addEventListener('click',()=>{
 });
 document.getElementById('btnUndo').addEventListener('click',()=>{
   if(thinking)return; const steps=mode==='ai'?2:1;
-  for(let i=0;i<steps&&history.length;i++){ const h=history.pop(); board=h.board; turn=h.turn; lastMove=h.lastMove; }
+  for(let i=0;i<steps&&history.length;i++){ const h=history.pop(); board=h.board; turn=h.turn; lastMove=h.lastMove;
+    if(posLog.length>1) posLog.pop(); }
   selected=null; legalForSel=[]; hintTarget=null; gameOver=false;
   document.getElementById('result').classList.add('hide'); draw(); updateStatus(); sfx.select();
 });
@@ -604,6 +656,7 @@ document.getElementById('btnPass').addEventListener('click',function(){
   if(this.disabled)return;
   history.push({board:clone(board),turn,lastMove});
   turn=opp(turn); selected=null; legalForSel=[]; hintTarget=null;
+  posLog.push(sig(board,turn));
   flash('','수 쉼'); draw(); updateStatus();
   if(mode==='ai'&&turn!==humanColor&&!gameOver){ thinking=true; updateStatus(); setTimeout(aiTurn,260); }
 });
@@ -637,6 +690,7 @@ function startGame(){
   mode=selMode; aiDepth=selDiff; humanColor=selColor==='han'?HAN:CHO; setupType=selSetup;
   flip = (mode==='ai' && humanColor===CHO);
   board=makeBoard(); turn=HAN; selected=null; legalForSel=[]; history=[];
+  posLog=[sig(board,turn)];
   gameOver=false; lastMove=null; hintTarget=null; thinking=false;
   document.getElementById('setup').classList.add('hide');
   document.getElementById('result').classList.add('hide');
